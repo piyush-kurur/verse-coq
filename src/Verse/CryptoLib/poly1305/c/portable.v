@@ -1,224 +1,335 @@
 Require Import Verse.
 Require Vector.
 Import VectorNotations.
+Require Verse.Arch.C.
 
-(** For this module we use [P] to denote the prime 2^130 - 5, the
-prime associated with Poly1305.
+(** printing Xt %X^t%  #X<sup>t</sup>#            *)
+(** printing Xti %X^{t-i+1}%  #X<sup>t-i+1</sup># *)
+(** printing GF %\ensuremath{\mathbb{F}}%  #𝔽#                 *)
 
+(** printing Two32  %2^{32}%  #2<sup>32</sup>#  *)
+(** printing Two64  %2^{64}%  #2<sup>64</sup>#  *)
+(** printing Two96  %2^{96}%  #2<sup>96</sup>#  *)
+(** printing Two128 %2^{128}% #2<sup>128</sup># *)
+(** printing Two130 %2^{130}% #2<sup>130</sup># *)
+(** printing Two32ij %2^{32 (i + j)}% #2<sup>32(i+j)</sup># *)
+(** printing Two32ij4 %2^{32 (i + j - 4)}% #2<sup>32(i+j - 4)</sup># *)
+(** printing Two2 %2^{2}% #2<sup>2</sup># *)
+
+(** printing C0 %C_0% #C<sub>0</sub>#   *)
+(** printing C1 %C_1% #C<sub>1</sub># *)
+(** printing C2 %C_2% #C<sub>2</sub># *)
+(** printing Ct %C_t% #C<sub>t</sub># *)
+(** printing Ci %C_i% #C<sub>i</sub># *)
+
+(** printing Mt %M_t% #M<sub>t</sub># *)
+(** printing Mi %M_i% #M<sub>i</sub># *)
+
+(** printing a0 %a_0% #a<sub>0</sub># *)
+(** printing a1 %a_1% #a<sub>1</sub># *)
+(** printing a2 %a_2% #a<sub>2</sub># *)
+(** printing a3 %a_3% #a<sub>3</sub># *)
+(** printing a4 %a_4% #a<sub>4</sub># *)
+(** printing ai %a_t% #a<sub>i</sub># *)
+
+(** printing r0 %r_0% #r<sub>0</sub># *)
+(** printing r1 %r_1% #r<sub>1</sub># *)
+(** printing r2 %r_2% #r<sub>2</sub># *)
+(** printing r3 %r_3% #r<sub>3</sub># *)
+(** printing r4 %r_4% #r<sub>4</sub># *)
+(** printing rp0 %r'_0% #r′<sub>0</sub># *)
+(** printing rp1 %r'_1% #r′<sub>1</sub># *)
+(** printing rp2 %r'_2% #r′<sub>2</sub># *)
+(** printing rp3 %r'_3% #r′<sub>3</sub># *)
+(** printing rpi %r'_i% #r′<sub>i</sub># *)
+(** printing r4 %r_4% #r<sub>4</sub># *)
+
+(** printing ri %r_i% #r<sub>i</sub># *)
+(** printing rj %r_j% #r<sub>j</sub># *)
+(** printing rjprim %r_j^'% #r′<sub>j</sub># *)
+
+(** printing p0 %p_0% #p<sub>0</sub># *)
+(** printing p1 %p_1% #p<sub>1</sub># *)
+(** printing p2 %p_2% #p<sub>2</sub># *)
+(** printing p3 %p_3% #p<sub>3</sub># *)
+(** printing p4 %p_4% #p<sub>4</sub># *)
+(** printing pi %p_i% #p<sub>i</sub># *)
+(** printing pi1 %p_{i+1}% #p<sub>i+1</sub># *)
+
+(** * The poly1305 message hash.
+
+Let [GF] denote the finite field GF(2¹³⁰ - 5). The poly1305 MAC in
+essence is just the evaluation of the message thought of as a
+polynomial over the finite field [GF]. Elements of this field can be
+represented using 130 bit word. To get the polynomial corresponding to
+the message [M], we divide it into blocks [Mi] of 16 byte (128-bits)
+with the possibility of the last block [Mt] to be of less than 16
+bytes. The message [M] is then considered as the polynomial
+
+[ M(X) = C1 Xt + ... + Ci Xti + ... + Ct X].
+
+where the coefficient [Ci] is the element in [GF] whose least
+significant bits are that of [Mi] with an additional 1-bit appended to
+it. Thus the length of Ci in bits is one more than that of [Mi].
+
+The poly1305 MAC for secrets [R] and [K] consists of computing [M(R) +
+K] rounded to 128 bits. At the heart of any fast implementations is
+therefore the Horner's method of evaluation of a polynomial: keep an
+accumulator [A] which starts with 0 and is updated using the step [A
+:= (A + Ci) * R]
 
  *)
+
+Definition Word       := Word64.
+Definition BLOCK_SIZE := 2.
+Definition Block      := Array BLOCK_SIZE littleE Word.
+
+
+(** ** Arithmetic over [GF].
+
+In C the biggest supported word type is the type of 64-bit word. This
+means that we would need multiple 64-bit "Limbs" to represent a single
+element of [GF]. Also we need to have enough left over bits so as to
+ensure that bits do not overflow during arithmetic and that we
+propagate carries correctly. We need enough additional vacant bits in
+the 64-bit limbs so that the update [A = (A + Ci) * R] can be done
+without overflows.
+
+ *)
+
+Definition Limb    := Word64.
+
+(**
+
+The poly1305 standard enforces that the parameter [R] in [GF] is of
+128-bit. To facilitate the use of 64-bit limbs it is additionally
+enforced that certain bits of [R] are zeros. If [R] in base 2³² is
+expressed as
+
+[R = r0 + r1 * Two32 + r2 * Two64 + r3 * Two96.]
+
+Then the restrictions on [ri] are
+
+- The most significant 4-bits of [ri] are all zero.
+
+- All except r₀ have their bottom 2-bits as zero.
+
+
+With these restrictions in place we can perform the Horner's step by
+representing elements of [GF] as 5x64-bit limbs where the first 4
+limbs contain 32-bits each and the last one contains the two remaining
+bits making a total of 130 bits.
+
+
+We define the Verse type that can capture such an element.
+
+*)
+
+Definition ElemArray := Array 5 hostE Limb.
+Definition RArray    := Array 4 hostE Limb.
+
+
+(*
+
 Require Import Semantics.NSemantics.
 Import NSemanticsTactics.
 Import NArith.
 Module Internal.
 
+*)
+
+Module Internal.
   Section Poly1305.
-    (** * Poly1305 on R,K
-
-        Fix P to be the prime 2^130 - 5.  Let M be the message. By
-        chunking into blocks of 128-bit each of which is thought of as
-        elements of GF(P)[X], the message becomes a polynomial [ M(X)
-        = C_1 X^t + C_2 X^(t - 1) ... C_t X + K]. The mac associated
-        with this message is M(R) mod P rounded to 128 bits. We use
-        the Horner's rule. We keep an accumulator A which is updated
-        according to A := (A + C_i) * R
-
-     *)
-
-
-    Definition Word := Word64.
-    Definition BLOCK_SIZE := 2.
-    Definition Block := Array BLOCK_SIZE littleE Word.
-
-     (** ** Keeping track of carry.
-
-         Elements of the field GF(P) are 130 bits long. To avoid
-         overflows when doing arithmetic, we keep track of such
-         elements using five 64-bit variables, each of them carrying a
-         payload of 26-bits each.  Let {x0,x1,x2,x3,x4} be such a
-         variable set, the integer value associated with it is given
-         by x0 + 2^26 x1 + 2^52 x2 + 2^78 x3 + 2^104 x4.
-
-         We define the word size for this primitive as Word64 and the
-         message as block of 2.  *)
-
-    Definition GFP1305 := Array 5 hostE Word.
-    Definition MASK26  : constant Word  := Ox "00:00:00:00 03:FF:FF:FF".
-    Definition TwoPow25 : constant Word := Ox "00:00:00:00 01:00:00:00".
-    Definition Five     : constant Word := Ox "00:00:00:00 00:00:00:05".
-    Definition Zero     : constant Word := Ox "00:00:00:00 00:00:00:00".
-
+    (** Let us start by parameterising over the program variables. *)
     Variable progvar : VariableT.
+    Definition ElemIndex := VarIndex progvar 5 Limb.
     Arguments progvar [k] _.
 
 
-    (** The parameters R and K and A are kept in their  GFP form *)
+    Variable Accum : progvar ElemArray.
 
-    Variable A : progvar GFP1305.
-    Variable R : progvar GFP1305.
-    Variable K : progvar GFP1305.
+    Definition params : Declaration := [Var Accum].
 
-    (** We need a register copy of them *)
-    Variable a0 a1 a2 a3 a4 : progvar Word.
-    Definition accumulator := [a0 ; a1; a2 ; a3; a4]%vector.
-    Definition ACC : VarIndex progvar 5 Word := varIndex accumulator.
+    (** Variables that keep track of the accumulator *)
+    Variables a0 a1 a2 a3 a4 : progvar Limb.
 
-    Variable r0 r1 r2 r3 r4 : progvar Word.
-    Definition rs := [r0 ; r1;  r2 ; r3 ; r4]%vector.
-    Definition Rs : VarIndex progvar 5 Word := varIndex rs.
+    (** Variables that keep track of the R values *)
+    Variables r0 r1 r2 r3    : progvar Limb.
 
-    Variable p0 p1 p2 p3 p4 : progvar Word.
-    Variable temp           : progvar Word.
+    (** The limbs that capture the result of product *)
+    Variable p0 p1 p2 p3 p4 : progvar Limb.
 
-    Definition CLEAR_ACC : code progvar.
-      verse (foreach (indices A) (fun i iproff => [ ACC i _ ::==  Ox "00:00:00:00 00:00:00:00"]%list)).
-    Defined.
+    (** Variables to read the coefficient of the polynomial *)
+    Variable C0 C1 : progvar Limb.
 
-    (** The variables to keep track of the coefficient of the
-        polynomial
+    Definition Select32 : constant Limb := Ox "00:00:00:00 FF:FF:FF:FF".
+
+
+    (** *** Computing [A := A * R]
+
+        We need to multiply the quantities
+
+        [A = a0 + a1 * Two32 + a2 * Two64 + a3 * Two96 + a4 Two128]
+        with
+
+        [R = r0 + r1 * Two32 + r2 * Two64 + r3 * Two96 ]
+
+        There is a total of 20-terms of the form [ai * rj * Two32ij
+        ]. When (i + j >= 4), [Two32ij = Two128 * Twoij4] together
+        with an additional [Two2] from [rj = rj/4 * 4] gives a term of
+        the kind [Two130]. However in the field [GF], [Two130 = 5] and
+        hence the ij-th term in the product gives [5 * ai * (rj/4)]
+        Twoij4]. Since the two lower order bits of [rj] are zeros
+        (except when j = 0), we can shift them without really worrying
+        about loosing bits. The product is given by
+
+        [p = p0 + p1 Two32 + p2 Two64 + p3 Two96 + p4 * Two128]
+
+        where
+
+        [p4 = a4 * r0 & 3]
+
+        [p0 = a0 * r0 + a1 * rp3 + a2 * rp2 + a3 * rp1 + a4 * rp0 ]
+
+        [p1 = a0 * r1 + a1 * r0 + a2 * rp3 + a3 * rp2 + a4 * rp1 ]
+
+        [p2 = a0 * r2 + a1 * r1 + a2 * r0 + a3 * rp3 + a4 * rp2 ]
+
+        [p3 = a0 * r3 + a1 * r2 + a2 * r1 + a3 * r0 + a4 * rp3 ]
+
+        [rpi = ri >> 2 = ri/4]. Note that we do not loose any of the
+        bits of [r1],[r2], and [r3]. The two bits lost from [r0] is
+        accounted for in [p4].
+
+        We require that each [a0..a3] should be at-most 33-bit (1
+        additional bit that comes from adding the coefficient of the
+        polynomial) and [a4] is at-most 4 bits.
+
      *)
 
-
-
-    Variable c0 c1 c2 c3 c4 : progvar Word.
-    Definition C : VarIndex progvar 5 Word := varIndex [c0; c1; c2; c3; c4].
-
-    (** This function loads 128 bit into the coefficient variables
-        26-bit at a time. To avoid using additional variables. We will
-        need to shift around bits and mask them. The first three
-        coefficients [c0], [c1], and [c2] account for 78 bits. So we
-        can manage this operation without any temporary variables by
-        use the higher words, [c3] and [c4].
-
-     *)
-    Notation one := (Fin.F1).
-    Notation two := (Fin.FS Fin.F1).
-
-    Definition NVal (x0 x1 x2 x3 x4 : N) := (x0 + 2^26 * x1 + 2^52 * x2 + 2^78 * x3  + 2^104 * x4)%N.
-    Definition LOAD_COEFFICIENT (blk : progvar Block) : code progvar.
-      verse [
-          c3 ::== blk [- 0 -];
-          c4 ::== blk [- 1 -];
-          (**
-              All the 128 bits are now in the register combination
-              [c3]:[c4]. Start by transferring the lowest 26 bits to
-              c0
-           **)
-          c0 ::= c3 & MASK26;
-
-          (**  Having given out 26 bits, we transfer the next 26 bits to c2 *)
-          c3 ::=>> 26;
-          c1 ::= c3 & MASK26;
-
-         (** Shifting 26-positions once more, we have a total of 12
-             bits in c3 that belongs to c2. First transfer this to c2
-             and then use c3 as a temporary variable to transfer the
-             remaining 14 bits from c4. We just need to shift c4 left
-             by 12 and mask the bits.
-          *)
-
-          c2 ::= c3 >> 26;
-          c3 ::= c4 << 12;
-          c3 ::=& MASK26;
-          c2 ::=| c3;
-
-          (** Remove the 14-bits transferred to c2 and make it to get the bits of c3 *)
-          c4 ::=>>14;
-          c3 ::=  c4 & MASK26;
-
-          (** The remaining 24 bit is what c4 deserves to get *)
-          c4 ::=>> 26;
-          ASSERT blk HAD arr;
-                 c0 HAS x0;
-                 c1 HAS x1;
-                 c2 HAS x2;
-                 c3 HAS x3;
-                 c4 HAS x4
-                    IN
-                 let a0 := arr[@one] in
-                 let a1 := arr[@two] in
-                 (2^64 * a1 + a0 = NVal x0 x1 x2 x3 x4)%N ;
-          c4 ::=| TwoPow25
-        ]%list.
-      Defined.
-      (** Perform A += C *)
-      Definition APLUSC : code progvar.
-        verse (foreach (indices A) ( fun i ip => [ACC i _ ::=+ C i _]%list)).
-      Defined.
-
-      (** * Multiply by R.
-
-         We think of the R's and A's as numbers in base 2^26. I.e
-
-       *)
-      (*
-         <<
-         A =  a0 + a1 X + a2 X^2 + a3 X^3 + a4 X^4
-         R =  r0 + r1 X + r2 X^2 + r3 X^3 + r4 X^4
-         >>
-
-       *)
-
-      (* If you multiply this as polynomials this would have 9
-         coefficients. But notice that X = 2^26 and hence X^5 = 5 mod
-         2^130 - 5. So the result can be seen as a coefficient X^(5+i)
-         would become 5 X^i.
-
-         This will give the following expression.
-
-       *)
-      (**
-          <<
-          p0 = a0 r0                                  + (a1 r4 + a2 r3 + a3 r2 + a4 r1) * 5
-          p1 = a0 r1 + a1 r0                          + (a2 r4 + a3 r3 + a4 r2) * 5
-          p2 = a0 r2 + a1 r1 + a2 r0                  + (a3 r4 + a4 r3) * 5
-          p3 = a0 r3 + a1 r2 + a2 r1 + a3 r0          + (a4 r4) * 5
-          p4 = a0 r4 + a1 r3 + a2 r2 + a3 r1 +  a4 r0
-
-          >>
-       *)
-
-      Definition MULR : code progvar :=
+    Definition Select2 : constant Limb := Ox "00:00:00:00 00:00:00:03".
+    Definition five     : constant Limb := Ox "00:00:00:00 00:00:00:05".
+    Definition MulR : code progvar
+      :=
         [
-          p0   ::= a0 * r0;
-          temp ::= a1 * r4; temp ::=* Five; p0 ::=+ temp;
-          temp ::= a2 * r3; temp ::=* Five; p0 ::=+ temp;
-          temp ::= a3 * r2; temp ::=* Five; p0 ::=+ temp;
-          temp ::= a4 * r1; temp ::=* Five; p0 ::=+ temp;
+          (** Summing up terms of the kind [ai * rj * Two32ij] for [i+j < 4] *)
+          p0 ::= a0 * r0;
 
-          p1   ::= a0 * r1;
-          temp ::= a1 * r0; p1   ::=+ temp;
-          temp ::= a2 * r4; temp ::=* Five; p1 ::=+ temp;
-          temp ::= a3 * r3; temp ::=* Five; p1 ::=+ temp;
-          temp ::= a4 * r2; temp ::=* Five; p1 ::=+ temp;
+          p1 ::= a0 * r1;
+          C0 ::= a1 * r0; p1 ::=+ C0;
+
+          p2 ::= a0 * r2;
+          C0 ::= a1 * r1; p2 ::=+ C0;
+          C0 ::= a2 * r0; p2 ::=+ C0;
+
+          p3 ::= a0 * r3;
+          C0 ::= a1 * r2; p2 ::=+ C0;
+          C0 ::= a2 * r1; p2 ::=+ C0;
+          C0 ::= a3 * r0; p2 ::=+ C0;
+
+          (** Summing up terms of the kind [ai * rj * Two32ij] for
+              [i+j >= 4]. So we divide them by 4 (i.e. right shift by 2)
+              and multiply by [Two130 = 5]. Shifting by 2 does not
+              lead to any loss of bits except for [r0] which we handle
+              first.
+           *)
+
+          p4 ::= r0 & Select2; p4 ::=* a4;
+
+          C0 ::= r0 >> 2; C0 ::=* five;
+          C1 ::= a4 * C0; p0 ::=+ C1;
+
+          C0 ::= r1 >> 2; C0 ::=+ r1; (* C0 = (r1 >> 2) * 5 *)
+          C1 ::= a3 * C0; p0 ::=+ C1;
+          C1 ::= a4 * C0; p1 ::=+ C1;
+
+          C0 ::= r2 >> 2; C0 ::=+ r2 ; (* C0 = (r2 >> 2) * 5 *)
+          C1 ::= a2 * C0; p0 ::=+ C1;
+          C1 ::= a3 * C0; p1 ::=+ C1;
+          C1 ::= a4 * C0; p2 ::=+ C1;
+
+          C0 ::= r3 >> 2; C0 ::=+ r3;  (* C0 = (r3 >> 2) * 5 *)
+          C1 ::= a1 * C0; p0 ::=+ C1;
+          C1 ::= a2 * C0; p1 ::=+ C1;
+          C1 ::= a3 * C0; p2 ::=+ C1;
+          C1 ::= a4 * C0; p3 ::=+ C1
+        ]%list.
 
 
-          p2   ::= a0 * r2;
-          temp ::= a1 * r1; p2   ::=+ temp;
-          temp ::= a2 * r0; p2   ::=+ temp;
-          temp ::= a3 * r4; temp ::=* Five; p2 ::=+ temp;
-          temp ::= a4 * r3; temp ::=* Five; p2 ::=+ temp;
+    (** *** Carry propagation and reduction modulo [Two130 - 5].
+
+        Recall that an element of [GF] can be stored with 32-bits each in registers [a0..a3] and the remaining 2 bits in [a4]. After computation of the product the registers [p0..p3] have about 62-bits and [p4] has about 5-bits. We cannot use this directly for the next Horner's step as there would be overflows. We adjust them by
+
+        1. Propagating the carries from [pi] to [pi1]
+
+        2. Reduce modulo [Two130 - 5].
+
+        The reduction modulo [Two130 - 5] is essentially like a
+        "carry" from [p4] to [p0]. We need to propagate the bits of
+        [p4] other than the 2 least significant bits with a
+        multiplicative factor of [5] as the element can be seen as
+        [Two130 * (p4 >> 2)].
+
+        The goal is to perform enough carry propagation and reduction
+        so as to ensure that that the bits in [a0,...,a3] continue to
+        be 32-bits and [a4] has at-most 3-bits. This is sufficient to
+        make sure that there is no overflow during the product
+        calculation in the next step.
+
+        It is crucial to decide where to start and end the carry
+        propagation.  Where ever we end, it can potentially have 1-bit
+        more than the desired limit.  We therefore start the carry
+        propagation from [p3] so that when we terminate, all the
+        [a0..a3] will have 32-bits each and [a4] 3-bits (one more than
+        the ideal 2-bits).
+
+     *)
+    Definition CarryPropogate : code progvar
+      := [ C0 ::= p3 >> 32; p3 ::=& Select32; p4 ::=+ C0;
+           C0 ::= p4 >> 2;  p4 ::=& Select2 ; C0 ::=* 5; p0 ::=+ C0;
+           C0 ::= p0 >> 32; a0 ::= p0 & Select32; p1 ::=+ C0;
+           C0 ::= p1 >> 32; a1 ::= p1 & Select32; p2 ::=+ C0;
+           C0 ::= p2 >> 32; a2 ::= p2 & Select32; p3 ::=+ C0;
+           C0 ::= p3 >> 32; a3 ::= p3 & Select32;
+           a4 ::= p4 + C0
+         ]%list.
+
+  (** *** Handling input.
+
+      When computing the poly1305 MAC, we need to take each
+      successive block of data, convert into the appropriate
+      coefficient of [GF] and add it to the accumulator for the
+      Horner's method. We have two variants of the code where the
+      first just adds the 128 bits directly. The other also increments
+      the 129th bit (remember it is set to 1 for a full block).  When
+      handling the last block we should use [Add128] with the
+      assumption that the padding is done properly. Otherwise, we should
+      use the [AddFullblock]
+
+  *)
+    Definition Add128 (blk : progvar Block) : code progvar.
+      verse [ (* The first two limbs *)
+
+          C1 ::==  blk[- 0 -];
+          C0 ::=   C1 & Select32;
+          C1 ::=>> 32;
+          a0 ::=+  C0;
+          a1 ::=+  C1;
+
+          (** The next two limbs *)
+
+          C1 ::==  blk[- 1 -];
+          C0 ::=   C1 & Select32;
+          C1 ::=>> 32;
+          a2 ::=+ C0;
+          a3 ::=+ C1
+        ]%list.
+    Defined.
+    Definition AddFullBlock (blk : progvar  Block) : code progvar
+      := Add128 blk ++ [ ++ a4 ]%list.
 
 
-          p3   ::= a0 * r3;
-          temp ::= a1 * r2; p3   ::=+ temp;
-          temp ::= a2 * r1; p3   ::=+ temp;
-          temp ::= a3 * r0; p3   ::=+ temp;
-          temp ::= a4 * r4; temp ::=* Five; p3 ::=+ temp;
-
-
-          p4   ::= a0 * r4;
-          temp ::= a1 * r3; p4 ::=+ temp;
-          temp ::= a2 * r2; p4 ::=+ temp;
-          temp ::= a3 * r1; p4 ::=+ temp;
-          temp ::= a4 * r0; p4 ::=+ temp;
-          ASSERT NVal (Val p0) (Val p1) (Val p2) (Val p3) (Val p4) mod (2 ^ 130 - 5) =
-                 NVal (Old a0) (Old a1) (Old a2) (Old a3) (Old a4) *
-                 NVal (Old r0) (Old r1) (Old r2) (Old r3) (Old r4) mod (2 ^ 130 - 5)
-        ]%list%N.
-
-
-  (** The parameter [r] used in Poly1305 has certain 22-bits set to
+    (** The parameter [r] used in Poly1305 has certain 22-bits set to
       zero. Converting an arbitrary 128-bit word to such a form is
       called clamping. The rules of clamping is the following.
 
@@ -232,28 +343,26 @@ Module Internal.
 
    Definition clamp (blk : progvar Block) : code progvar.
      verse [
-         temp ::== blk[- 0 -];
-         temp ::=& Ox "0f:ff:ff:fc 0f:ff:ff:ff";
-         MOVE temp TO blk[- 0 -];
+         C0 ::== blk[- 0 -];
+         C0 ::=& Ox "0f:ff:ff:fc 0f:ff:ff:ff";
+         MOVE C0 TO blk[- 0 -];
 
-         temp ::== blk[- 1 -];
-         temp ::=& Ox "0f:ff:ff:fc 0f:ff:ff:fc";
-         MOVE temp TO blk[- 1 -]
+         C0 ::== blk[- 1 -];
+         C0 ::=& Ox "0f:ff:ff:fc 0f:ff:ff:fc";
+         MOVE C0 TO blk[- 1 -]
        ]%list.
    Defined.
-
+   Definition regClamp : Declaration := [Var C0]%vector.
    Definition clampIter : iterator Block progvar
      := {| setup    := []%list;
            process  := clamp;
            finalise := []%list
         |}.
 
-
-   Definition regClamp : Declaration := [Var temp]%vector.
-
   End Poly1305.
 
-  Require Import Verse.Arch.C.
+
+  Import Verse.Arch.C.
   Definition prototypeClamp (fname : string) : Prototype CType + {Compile.CompileError}.
     Compile.iteratorPrototype Block fname Empty.
   Defined.
@@ -275,10 +384,6 @@ Definition prototypes fname :=
       {- [ clampProto ]%list -}.
 
 End Internal.
-
-
-
-
 
 Require Import Verse.Extraction.Ocaml.
 Require Import Verse.CryptoLib.Names.
