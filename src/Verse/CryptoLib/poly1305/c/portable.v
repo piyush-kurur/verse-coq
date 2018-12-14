@@ -258,7 +258,12 @@ Module Internal.
 
     (** *** Carry propagation and reduction modulo [Two130 - 5].
 
-        Recall that an element of [GF] can be stored with 32-bits each in registers [a0..a3] and the remaining 2 bits in [a4]. After computation of the product the registers [p0..p3] have about 62-bits and [p4] has about 5-bits. We cannot use this directly for the next Horner's step as there would be overflows. We adjust them by
+        Recall that an element of [GF] can be stored with 32-bits each
+        in registers [a0..a3] and the remaining 2 bits in [a4]. After
+        computation of the product the registers [p0..p3] have about
+        62-bits and [p4] has about 5-bits. We cannot use this directly
+        for the next Horner's step as there would be overflows. We
+        adjust them by
 
         1. Propagating the carries from [pi] to [pi1]
 
