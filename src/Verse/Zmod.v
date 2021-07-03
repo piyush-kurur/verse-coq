@@ -65,7 +65,6 @@ Definition oppZmod {m : Modulus} (x : Zmod m) : Zmod m := [- [x] ]%Z.
 Definition subZmod {m : Modulus}(x y : Zmod m) : Zmod m := [ [ x ] - [ y ] ]%Z.
 Definition eqZmod {m}(x y : Zmod m) := @eq Z [ x ] [ y ].
 
-Search (Z -> Z -> bool).
 
 Definition eqb_Zmod {m}(x y : Zmod m) : bool := Z.eqb [x] [y].
 
@@ -204,7 +203,6 @@ Section Properties.
     crush_with_rewrite Z.mul_comm.
   Qed.
 
-  Check Z.mul_mod.
   Lemma mul_mod_inner_r : (forall (x y z M : Z), M <> 0 -> x * ((y mod M) * (z mod M) mod M) = x * ((y * z) mod M))%Z.
     intros.
     rewrite <- Z.mul_mod; trivial.
@@ -249,10 +247,6 @@ Section Properties.
     rewrite Z.add_mod; crush.
   Qed.
 
-  (*
-  Hint Resolve Z.mod_le Z.mod_lt Z.lt_le_incl : Zmod.  *)
-
-  Search ((_ - _ mod _) mod _)%Z.
 
 
   Lemma Zmod_opp_def : (forall x : Zmod m, (x + - x) == 0).
@@ -335,5 +329,10 @@ Qed.
 (** Some interesting prime modulus *)
 Definition P1305 : Modulus := exist _ (2^130 - 5)%Z eq_refl.
 Definition P25519 : Modulus := exist _ (2^255 - 19)%Z eq_refl.
-Add Ring GFP1305 : (Zmod_ring P1305).
-Add Ring GFP25519 : (Zmod_ring P25519).
+
+Add Ring ring_GFP1305 : (Zmod_ring P1305).
+Add Ring ring_GFP25519 : (Zmod_ring P25519).
+
+Lemma foo : forall x : Zmod P1305, (x * [(2^130)%Z] == x * [5%Z]).
+  crush.
+Qed.
