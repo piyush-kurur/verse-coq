@@ -6,6 +6,7 @@ semantics.
  *)
 Require Export Bvector.
 Require Import BinNat.
+Require Import BinInt.
 Require Import Arith.
 Require Import NArith.
 Require Import Nat.
@@ -141,6 +142,14 @@ Definition div2power_nat    {sz} n := @BVshiftR sz n.
 Definition modulo2power_nat {sz} n := @selectLower sz n.
 Definition of_N {sz}   : N -> Bvector sz := N2Bv_sized sz.
 Definition to_N {sz}   : Bvector sz -> N := @Bv2N sz.
+Definition to_Z {sz} (bv : Bvector sz) : Z := Z.of_N (to_N bv).
+Definition of_Z {sz} (z : Z) : Bvector sz  :=
+  match z with
+  | Z0 => @BVzeros sz
+  | Zpos p => of_N (Npos p)
+  | Zneg p => BVnegative (of_N (Npos p))
+  end.
+
 (*
 Definition of_nat {sz} : nat -> Bvector sz :=  fun n => N2Bv_sized sz (N.of_nat n).
 Definition to_nat {sz} : Bvector sz -> nat := fun vec => N.to_nat (to_N vec).
