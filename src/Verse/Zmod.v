@@ -325,6 +325,9 @@ Add Parametric Morphism m : (@opposite (Zmod m) _)
   rewrite H1; trivial.
 Qed.
 
+(** The element 2 in ℤ/mℤ  *)
+Definition two {m} : Zmod m := [2%Z].
+
 
 (** Some interesting prime modulus *)
 Definition P1305 : Modulus := exist _ (2^130 - 5)%Z eq_refl.
