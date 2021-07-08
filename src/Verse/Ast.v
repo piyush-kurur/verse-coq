@@ -104,6 +104,11 @@ Section VerseCode.
   | moveTo    : lexpr ty -> v ty  -> instruction ty
   | clobber   : v ty -> instruction ty.
 
+  Inductive cpsInst A ty : Type :=
+  | cpsRet  : A -> cpsInst A ty
+  | cpsBind : expr ty -> (v ty -> forall typ, cpsInst A typ) -> cpsInst A ty.
+
+  Definition cps A := sigT (cpsInst A).
 
   Definition statement := sigT instruction.
   Definition code := list statement.
